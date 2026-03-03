@@ -5,11 +5,19 @@
 // - Headless: Sapling runs as a Bun subprocess (no tmux TUI)
 // - Instruction file: SAPLING.md (auto-read from worktree root)
 // - Communication: JSON-RPC over stdin/stdout (--mode rpc)
-// - Guards: .sapling/guards.json (stub for Wave 3 guard deployment)
+// - Guards: .sapling/guards.json (written by deployConfig from guard-rules.ts constants)
 // - Events: NDJSON stream on stdout (parsed for token usage and agent events)
 
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import {
+	DANGEROUS_BASH_PATTERNS,
+	INTERACTIVE_TOOLS,
+	NATIVE_TEAM_TOOLS,
+	SAFE_BASH_PREFIXES,
+	WRITE_TOOLS,
+} from "../agents/guard-rules.ts";
+import { DEFAULT_QUALITY_GATES } from "../config.ts";
 import type { ResolvedModel } from "../types.ts";
 import type {
 	AgentEvent,
@@ -21,6 +29,124 @@ import type {
 	SpawnOpts,
 	TranscriptSummary,
 } from "./types.ts";
+
+/**
+ * Bash patterns that modify files and require path boundary validation
+ * for implementation agents (builder/merger). Mirrors the constant in pi-guards.ts.
+ */
+const FILE_MODIFYING_BASH_PATTERNS = [
+	"sed\\s+-i",
+	"sed\\s+--in-place",
+	"echo\\s+.*>",
+	"printf\\s+.*>",
+	"cat\\s+.*>",
+	"tee\\s",
+	"\\bmv\\s",
+	"\\bcp\\s",
+	"\\brm\\s",
+	"\\bmkdir\\s",
+	"\\btouch\\s",
+	"\\bchmod\\s",
+	"\\bchown\\s",
+	">>",
+	"\\binstall\\s",
+	"\\brsync\\s",
+];
+
+/** Capabilities that must not modify project files (read-only mode). */
+const NON_IMPLEMENTATION_CAPABILITIES = new Set([
+	"scout",
+	"reviewer",
+	"lead",
+	"coordinator",
+	"supervisor",
+	"monitor",
+]);
+
+/** Coordination capabilities that get git add/commit whitelisted for metadata sync. */
+const COORDINATION_CAPABILITIES = new Set(["coordinator", "supervisor", "monitor"]);
+
+/**
+ * Build the full guards configuration object for .sapling/guards.json.
+ *
+ * Translates overstory guard-rules.ts constants and HooksDef fields into a
+ * JSON-serializable format that the `sp` CLI can consume to enforce:
+ * - Path boundary: all writes must target files within worktreePath.
+ * - Blocked tools: NATIVE_TEAM_TOOLS and INTERACTIVE_TOOLS for all agents;
+ *   WRITE_TOOLS additionally for non-implementation capabilities.
+ * - Bash guards: DANGEROUS_BASH_PATTERNS blocklist (non-impl) or
+ *   FILE_MODIFYING_BASH_PATTERNS path boundary (impl), with SAFE_BASH_PREFIXES.
+ * - Quality gates: commands agents must pass before reporting completion.
+ * - Event config: argv arrays for activity tracking via `ov log`.
+ *
+ * @param hooks - Agent identity, capability, worktree path, and optional quality gates.
+ * @returns JSON-serializable guards configuration object.
+ */
+function buildGuardsConfig(hooks: HooksDef): Record<string, unknown> {
+	const { agentName, capability, worktreePath, qualityGates } = hooks;
+	const gates = qualityGates ?? DEFAULT_QUALITY_GATES;
+	const isNonImpl = NON_IMPLEMENTATION_CAPABILITIES.has(capability);
+	const isCoordination = COORDINATION_CAPABILITIES.has(capability);
+
+	// Build safe Bash prefixes: base set + coordination extras + quality gate commands.
+	const safePrefixes: string[] = [
+		...SAFE_BASH_PREFIXES,
+		...(isCoordination ? ["git add", "git commit"] : []),
+		...gates.map((g) => g.command),
+	];
+
+	return {
+		// Schema version for forward-compatibility.
+		version: 1,
+		// Agent identity (injected into event tracking commands).
+		agentName,
+		capability,
+		// Path boundary: all file writes must target paths within this directory.
+		// Equivalent to the worktree's exclusive file scope.
+		pathBoundary: worktreePath,
+		// Read-only mode: true for non-implementation capabilities (scout, reviewer, lead, etc.).
+		// When true, write tools are blocked in addition to the always-blocked tool set.
+		readOnly: isNonImpl,
+		// Tool names blocked for ALL agents.
+		// - nativeTeamTools: use `ov sling` for delegation instead.
+		// - interactiveTools: escalate via `ov mail --type question` instead.
+		blockedTools: [...NATIVE_TEAM_TOOLS, ...INTERACTIVE_TOOLS],
+		// Tool names blocked only for read-only (non-implementation) agents.
+		// Empty array for implementation agents (builder/merger).
+		writeToolsBlocked: isNonImpl ? [...WRITE_TOOLS] : [],
+		// Write/edit tool names subject to path boundary enforcement (all agents).
+		writeToolNames: [...WRITE_TOOLS],
+		bashGuards: {
+			// Safe Bash prefixes: bypass dangerous pattern checks when matched.
+			// Includes base overstory commands, optional git add/commit for coordination,
+			// and quality gate command prefixes.
+			safePrefixes,
+			// Dangerous Bash patterns: blocked for non-implementation agents.
+			// Each string is a regex fragment (grep -qE compatible).
+			dangerousPatterns: DANGEROUS_BASH_PATTERNS,
+			// File-modifying Bash patterns: require path boundary check for implementation agents.
+			// Each string is a regex fragment; matched paths must fall within pathBoundary.
+			fileModifyingPatterns: FILE_MODIFYING_BASH_PATTERNS,
+		},
+		// Quality gate commands that must pass before the agent reports task completion.
+		qualityGates: gates.map((g) => ({
+			name: g.name,
+			command: g.command,
+			description: g.description,
+		})),
+		// Activity tracking event configuration.
+		// Each value is an argv array passed to Bun.spawn() — no shell interpolation.
+		// The `sp` runtime fires these on the corresponding lifecycle events.
+		eventConfig: {
+			// Fires before each tool executes (updates lastActivity in SessionStore).
+			onToolStart: ["ov", "log", "tool-start", "--agent", agentName],
+			// Fires after each tool completes.
+			onToolEnd: ["ov", "log", "tool-end", "--agent", agentName],
+			// Fires when the agent's work loop completes or the process exits.
+			onSessionEnd: ["ov", "log", "session-end", "--agent", agentName],
+		},
+	};
+}
 
 /**
  * Sapling runtime adapter.
@@ -136,23 +262,24 @@ export class SaplingRuntime implements AgentRuntime {
 	}
 
 	/**
-	 * Deploy per-agent instructions and guard stubs to a worktree.
+	 * Deploy per-agent instructions and guard configuration to a worktree.
 	 *
 	 * Writes the overlay content to `SAPLING.md` in the worktree root.
-	 * Also writes `.sapling/guards.json` with an empty guards array as a
-	 * stub for Wave 3 guard deployment (full guard implementation is out of scope).
+	 * Also writes `.sapling/guards.json` with the full guard configuration
+	 * derived from `hooks` — translating overstory guard-rules.ts constants
+	 * into JSON-serializable form for the `sp` CLI to enforce.
 	 *
 	 * When overlay is undefined (hooks-only deployment for coordinator/supervisor/monitor),
 	 * this is a no-op since Sapling has no hook system to deploy.
 	 *
 	 * @param worktreePath - Absolute path to the agent's git worktree
 	 * @param overlay - Overlay content to write as SAPLING.md, or undefined for no-op
-	 * @param _hooks - Hook definition (unused — Sapling uses .sapling/guards.json)
+	 * @param hooks - Agent identity, capability, and quality gates for guard config
 	 */
 	async deployConfig(
 		worktreePath: string,
 		overlay: OverlayContent | undefined,
-		_hooks: HooksDef,
+		hooks: HooksDef,
 	): Promise<void> {
 		if (!overlay) return;
 
@@ -161,10 +288,11 @@ export class SaplingRuntime implements AgentRuntime {
 		await mkdir(dirname(saplingPath), { recursive: true });
 		await Bun.write(saplingPath, overlay.content);
 
-		// Write .sapling/guards.json stub (Wave 3 will populate with real guards).
+		// Write .sapling/guards.json with full guard configuration.
+		// Translates overstory guard-rules.ts constants into JSON for the `sp` CLI.
 		const guardsPath = join(worktreePath, ".sapling", "guards.json");
 		await mkdir(dirname(guardsPath), { recursive: true });
-		await Bun.write(guardsPath, `${JSON.stringify({ guards: [] }, null, 2)}\n`);
+		await Bun.write(guardsPath, `${JSON.stringify(buildGuardsConfig(hooks), null, 2)}\n`);
 	}
 
 	/**
