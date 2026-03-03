@@ -409,6 +409,92 @@ describe("renderAgentPanel", () => {
 		// dimBox.vertical is a dimmed ANSI string — present in output
 		expect(out).toContain(dimBox.vertical);
 	});
+
+	test("renders Live column header (not Tmux)", () => {
+		const data = makeDashboardData({});
+		const out = renderAgentPanel(data, 100, 12, 3);
+		expect(out).toContain("Live");
+		expect(out).not.toContain("Tmux");
+	});
+
+	test("shows green dot for headless agent with alive PID", () => {
+		const alivePid = process.pid; // own PID — guaranteed alive
+		const data = {
+			...makeDashboardData({}),
+			status: {
+				currentRunId: null,
+				agents: [
+					{
+						id: "sess-h1",
+						agentName: "headless-worker",
+						capability: "builder",
+						worktreePath: "/tmp/wt/headless",
+						branchName: "overstory/headless/task-1",
+						taskId: "task-h1",
+						tmuxSession: "", // headless
+						state: "working" as const,
+						pid: alivePid,
+						parentAgent: null,
+						depth: 0,
+						runId: null,
+						startedAt: new Date(Date.now() - 10_000).toISOString(),
+						lastActivity: new Date().toISOString(),
+						escalationLevel: 0,
+						stalledSince: null,
+						transcriptPath: null,
+					},
+				],
+				worktrees: [],
+				tmuxSessions: [], // no tmux sessions
+				unreadMailCount: 0,
+				mergeQueueCount: 0,
+				recentMetricsCount: 0,
+			},
+		};
+		const out = renderAgentPanel(data, 100, 12, 3);
+		// Green ">" for alive headless agent
+		expect(out).toContain(">");
+		expect(out).toContain("headless-worker");
+	});
+
+	test("shows red dot for headless agent with dead PID", () => {
+		const deadPid = 2_147_483_647;
+		const data = {
+			...makeDashboardData({}),
+			status: {
+				currentRunId: null,
+				agents: [
+					{
+						id: "sess-h2",
+						agentName: "dead-headless", // short enough to not be truncated
+						capability: "builder",
+						worktreePath: "/tmp/wt/dead-headless",
+						branchName: "overstory/dead-headless/task-2",
+						taskId: "task-h2",
+						tmuxSession: "", // headless
+						state: "working" as const,
+						pid: deadPid,
+						parentAgent: null,
+						depth: 0,
+						runId: null,
+						startedAt: new Date(Date.now() - 10_000).toISOString(),
+						lastActivity: new Date().toISOString(),
+						escalationLevel: 0,
+						stalledSince: null,
+						transcriptPath: null,
+					},
+				],
+				worktrees: [],
+				tmuxSessions: [],
+				unreadMailCount: 0,
+				mergeQueueCount: 0,
+				recentMetricsCount: 0,
+			},
+		};
+		const out = renderAgentPanel(data, 100, 12, 3);
+		expect(out).toContain("x");
+		expect(out).toContain("dead-headless");
+	});
 });
 
 describe("openDashboardStores", () => {

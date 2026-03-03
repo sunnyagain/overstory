@@ -349,6 +349,83 @@ describe("run scoping", () => {
 	});
 });
 
+describe("headless agent alive markers", () => {
+	let chunks: string[];
+	let originalWrite: typeof process.stdout.write;
+
+	beforeEach(() => {
+		chunks = [];
+		originalWrite = process.stdout.write;
+		process.stdout.write = ((chunk: string) => {
+			chunks.push(chunk);
+			return true;
+		}) as typeof process.stdout.write;
+	});
+
+	afterEach(() => {
+		process.stdout.write = originalWrite;
+	});
+
+	function output(): string {
+		return chunks.join("");
+	}
+
+	test("printStatus shows green marker for headless agent with alive PID", () => {
+		// Use own process PID — guaranteed alive
+		const alivePid = process.pid;
+		const agent = makeAgent({
+			agentName: "headless-builder",
+			tmuxSession: "", // headless: no tmux
+			pid: alivePid,
+			state: "working",
+		});
+		const data = makeStatusData({
+			agents: [agent],
+			tmuxSessions: [], // no tmux sessions
+		});
+		printStatus(data);
+		const out = output();
+		// Green marker is ">" — check it appears in the output
+		expect(out).toContain("headless-builder");
+		expect(out).toContain(">");
+	});
+
+	test("printStatus shows red marker for headless agent with dead PID", () => {
+		const deadPid = 2_147_483_647; // max int, virtually guaranteed non-existent
+		const agent = makeAgent({
+			agentName: "dead-headless-builder",
+			tmuxSession: "", // headless: no tmux
+			pid: deadPid,
+			state: "working",
+		});
+		const data = makeStatusData({
+			agents: [agent],
+			tmuxSessions: [],
+		});
+		printStatus(data);
+		const out = output();
+		expect(out).toContain("dead-headless-builder");
+		expect(out).toContain("x");
+	});
+
+	test("printStatus uses tmux check (not PID) for tmux-based agents", () => {
+		const agent = makeAgent({
+			agentName: "tmux-builder",
+			tmuxSession: "overstory-test-builder",
+			pid: process.pid, // alive PID, but should use tmux check
+			state: "working",
+		});
+		// tmuxSessions empty → tmux dead → red marker
+		const data = makeStatusData({
+			agents: [agent],
+			tmuxSessions: [],
+		});
+		printStatus(data);
+		const out = output();
+		expect(out).toContain("x");
+	});
+});
+
 describe("--watch deprecation", () => {
 	test("help text marks --watch as deprecated", async () => {
 		const chunks: string[] = [];

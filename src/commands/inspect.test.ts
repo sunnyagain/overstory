@@ -18,7 +18,7 @@ import { createMetricsStore } from "../metrics/store.ts";
 import { createSessionStore } from "../sessions/store.ts";
 import { cleanupTempDir } from "../test-helpers.ts";
 import type { InsertEvent, SessionMetrics } from "../types.ts";
-import { gatherInspectData, inspectCommand } from "./inspect.ts";
+import { gatherInspectData, inspectCommand, printInspectData } from "./inspect.ts";
 
 /** Helper to create an InsertEvent with sensible defaults. */
 function makeEvent(overrides: Partial<InsertEvent> = {}): InsertEvent {
@@ -562,6 +562,161 @@ describe("inspectCommand", () => {
 			expect(parsed.command).toBe("inspect");
 			expect(parsed.session.agentName).toBe("builder-1");
 			expect(parsed.timeSinceLastActivity).toBeGreaterThan(0);
+		});
+	});
+
+	// === Headless agent support ===
+
+	describe("headless agent support", () => {
+		test("gatherInspectData skips tmux capture for headless agents (empty tmuxSession)", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+			const sessionsDbPath = join(overstoryDir, "sessions.db");
+			const store = createSessionStore(sessionsDbPath);
+			store.upsert({
+				id: "sess-h1",
+				agentName: "headless-agent",
+				capability: "builder",
+				worktreePath: "/tmp/wt",
+				branchName: "overstory/headless/task-1",
+				taskId: "overstory-h01",
+				tmuxSession: "", // headless
+				state: "working",
+				pid: process.pid,
+				parentAgent: null,
+				depth: 0,
+				runId: null,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			});
+			store.close();
+
+			// noTmux=false but tmuxSession="" — should skip tmux capture without error
+			const data = await gatherInspectData(tempDir, "headless-agent", { noTmux: false });
+			// tmuxOutput is null (no tmux) and no events yet → no fallback either
+			expect(data.session.agentName).toBe("headless-agent");
+			expect(data.session.tmuxSession).toBe("");
+			// tmuxOutput may be null (no events) or a string (fallback) — must not throw
+		});
+
+		test("gatherInspectData provides event-based output for headless agents with tool calls", async () => {
+			const overstoryDir = join(tempDir, ".overstory");
+			const sessionsDbPath = join(overstoryDir, "sessions.db");
+			const eventsDbPath = join(overstoryDir, "events.db");
+
+			const store = createSessionStore(sessionsDbPath);
+			store.upsert({
+				id: "sess-h2",
+				agentName: "headless-events",
+				capability: "builder",
+				worktreePath: "/tmp/wt",
+				branchName: "overstory/headless/task-2",
+				taskId: "overstory-h02",
+				tmuxSession: "", // headless
+				state: "working",
+				pid: process.pid,
+				parentAgent: null,
+				depth: 0,
+				runId: null,
+				startedAt: new Date().toISOString(),
+				lastActivity: new Date().toISOString(),
+				escalationLevel: 0,
+				stalledSince: null,
+				transcriptPath: null,
+			});
+			store.close();
+
+			const eventStore = createEventStore(eventsDbPath);
+			eventStore.insert(
+				makeEvent({ agentName: "headless-events", toolName: "Read", toolDurationMs: 50 }),
+			);
+			eventStore.insert(
+				makeEvent({ agentName: "headless-events", toolName: "Edit", toolDurationMs: 100 }),
+			);
+			eventStore.close();
+
+			const data = await gatherInspectData(tempDir, "headless-events", { noTmux: false });
+
+			// Should have fallback output
+			expect(data.tmuxOutput).not.toBeNull();
+			expect(data.tmuxOutput).toContain("Headless agent");
+			expect(data.tmuxOutput).toContain("Read");
+		});
+
+		test("printInspectData shows PID instead of tmux session for headless agents", () => {
+			const data = {
+				session: {
+					id: "sess-h3",
+					agentName: "headless-display",
+					capability: "builder",
+					worktreePath: "/tmp/wt",
+					branchName: "overstory/headless/task-3",
+					taskId: "overstory-h03",
+					tmuxSession: "", // headless
+					state: "working" as const,
+					pid: 99999,
+					parentAgent: null,
+					depth: 0,
+					runId: null,
+					startedAt: new Date().toISOString(),
+					lastActivity: new Date().toISOString(),
+					escalationLevel: 0,
+					stalledSince: null,
+					transcriptPath: null,
+				},
+				timeSinceLastActivity: 5000,
+				recentToolCalls: [],
+				currentFile: null,
+				toolStats: [],
+				tokenUsage: null,
+				tmuxOutput: null,
+			};
+
+			printInspectData(data);
+
+			const out = output();
+			expect(out).toContain("Process: PID");
+			expect(out).toContain("99999");
+			expect(out).toContain("headless");
+			expect(out).not.toContain("Tmux:");
+		});
+
+		test("printInspectData shows Recent Activity header for headless agents with tmuxOutput", () => {
+			const data = {
+				session: {
+					id: "sess-h4",
+					agentName: "headless-activity",
+					capability: "builder",
+					worktreePath: "/tmp/wt",
+					branchName: "overstory/headless/task-4",
+					taskId: "overstory-h04",
+					tmuxSession: "", // headless
+					state: "working" as const,
+					pid: 99998,
+					parentAgent: null,
+					depth: 0,
+					runId: null,
+					startedAt: new Date().toISOString(),
+					lastActivity: new Date().toISOString(),
+					escalationLevel: 0,
+					stalledSince: null,
+					transcriptPath: null,
+				},
+				timeSinceLastActivity: 5000,
+				recentToolCalls: [],
+				currentFile: null,
+				toolStats: [],
+				tokenUsage: null,
+				tmuxOutput: "[Headless agent — showing recent tool events]",
+			};
+
+			printInspectData(data);
+
+			const out = output();
+			expect(out).toContain("Recent Activity (headless)");
+			expect(out).not.toContain("Live Tmux Output");
 		});
 	});
 

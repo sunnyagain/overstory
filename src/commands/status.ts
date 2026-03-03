@@ -20,7 +20,7 @@ import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession } from "../types.ts";
 import { evaluateHealth } from "../watchdog/health.ts";
 import { listWorktrees } from "../worktree/manager.ts";
-import { listSessions } from "../worktree/tmux.ts";
+import { isProcessAlive, listSessions } from "../worktree/tmux.ts";
 
 // ---------------------------------------------------------------------------
 // Subprocess result cache (TTL-based, module-level)
@@ -260,8 +260,11 @@ export function printStatus(data: StatusData): void {
 					? new Date(agent.lastActivity).getTime()
 					: now;
 			const duration = formatDuration(endTime - new Date(agent.startedAt).getTime());
-			const tmuxAlive = tmuxSessionNames.has(agent.tmuxSession);
-			const aliveMarker = tmuxAlive ? color.green(">") : color.red("x");
+			const isHeadless = agent.tmuxSession === "" && agent.pid !== null;
+			const alive = isHeadless
+				? agent.pid !== null && isProcessAlive(agent.pid)
+				: tmuxSessionNames.has(agent.tmuxSession);
+			const aliveMarker = alive ? color.green(">") : color.red("x");
 			w(`   ${aliveMarker} ${accent(agent.agentName)} [${agent.capability}] `);
 			w(`${agent.state} | ${accent(agent.taskId)} | ${duration}\n`);
 

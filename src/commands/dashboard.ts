@@ -42,6 +42,7 @@ import { createTrackerClient, resolveBackend } from "../tracker/factory.ts";
 import type { TrackerIssue } from "../tracker/types.ts";
 import type { EventStore, MailMessage, StoredEvent } from "../types.ts";
 import { evaluateHealth } from "../watchdog/health.ts";
+import { isProcessAlive } from "../worktree/tmux.ts";
 import { getCachedTmuxSessions, getCachedWorktrees, type StatusData } from "./status.ts";
 
 const pkgPath = resolve(import.meta.dir, "../../package.json");
@@ -555,7 +556,7 @@ export function renderAgentPanel(
 	output += `${CURSOR.cursorTo(startRow, 1)}${headerLine}${headerPadding}${dimBox.vertical}\n`;
 
 	// Column headers
-	const colStr = `${dimBox.vertical} St Name            Capability    State      Task ID          Duration  Tmux `;
+	const colStr = `${dimBox.vertical} St Name            Capability    State      Task ID          Duration  Live `;
 	const colPadding = " ".repeat(
 		Math.max(0, leftWidth - visibleLength(colStr) - visibleLength(dimBox.vertical)),
 	);
@@ -595,10 +596,13 @@ export function renderAgentPanel(
 				: now;
 		const duration = formatDuration(endTime - new Date(agent.startedAt).getTime());
 		const durationPadded = pad(duration, 9);
-		const tmuxAlive = data.status.tmuxSessions.some((s) => s.name === agent.tmuxSession);
-		const tmuxDot = tmuxAlive ? color.green(">") : color.red("x");
+		const isHeadless = agent.tmuxSession === "" && agent.pid !== null;
+		const alive = isHeadless
+			? agent.pid !== null && isProcessAlive(agent.pid)
+			: data.status.tmuxSessions.some((s) => s.name === agent.tmuxSession);
+		const aliveDot = alive ? color.green(">") : color.red("x");
 
-		const lineContent = `${dimBox.vertical} ${stateColorFn(icon)}  ${name} ${capability} ${stateColorFn(state)} ${taskId} ${durationPadded} ${tmuxDot}    `;
+		const lineContent = `${dimBox.vertical} ${stateColorFn(icon)}  ${name} ${capability} ${stateColorFn(state)} ${taskId} ${durationPadded} ${aliveDot}    `;
 		const linePadding = " ".repeat(
 			Math.max(0, leftWidth - visibleLength(lineContent) - visibleLength(dimBox.vertical)),
 		);

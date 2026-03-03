@@ -193,11 +193,22 @@ export async function gatherInspectData(
 			}
 		}
 
-		// tmux capture
+		// tmux capture (skipped for headless agents where tmuxSession is empty)
 		let tmuxOutput: string | null = null;
 		if (!opts.noTmux && session.tmuxSession) {
 			const lines = opts.tmuxLines ?? 30;
 			tmuxOutput = await captureTmux(session.tmuxSession, lines);
+		}
+
+		// Headless fallback: show recent events as live output when no tmux
+		if (!tmuxOutput && session.tmuxSession === "" && recentToolCalls.length > 0) {
+			const lines: string[] = ["[Headless agent — showing recent tool events]", ""];
+			for (const call of recentToolCalls.slice(0, 15)) {
+				const time = new Date(call.timestamp).toLocaleTimeString();
+				const dur = call.durationMs !== null ? `${call.durationMs}ms` : "pending";
+				lines.push(`  [${time}] ${call.toolName.padEnd(15)} ${dur}`);
+			}
+			tmuxOutput = lines.join("\n");
 		}
 
 		return {
@@ -233,7 +244,11 @@ export function printInspectData(data: InspectData): void {
 		w(`Parent: ${accent(session.parentAgent)} (depth: ${session.depth})\n`);
 	}
 	w(`Started: ${session.startedAt}\n`);
-	w(`Tmux: ${accent(session.tmuxSession)}\n`);
+	if (session.tmuxSession) {
+		w(`Tmux: ${accent(session.tmuxSession)}\n`);
+	} else if (session.pid !== null) {
+		w(`Process: PID ${accent(String(session.pid))} (headless)\n`);
+	}
 	w("\n");
 
 	// Current file
@@ -287,9 +302,9 @@ export function printInspectData(data: InspectData): void {
 		w("\n");
 	}
 
-	// tmux output
+	// tmux output (or headless fallback)
 	if (data.tmuxOutput) {
-		w("Live Tmux Output\n");
+		w(data.session.tmuxSession ? "Live Tmux Output\n" : "Recent Activity (headless)\n");
 		w(`${separator()}\n`);
 		w(`${data.tmuxOutput}\n`);
 		w(`${separator()}\n`);
