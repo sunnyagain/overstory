@@ -66,6 +66,10 @@ const EVENT_LABELS: Record<EventType, EventLabel> = {
 	spawn: { compact: "SPAWN", full: "SPAWN     ", color: color.magenta },
 	error: { compact: "ERROR", full: "ERROR     ", color: color.red },
 	custom: { compact: "CUSTM", full: "CUSTOM    ", color: color.gray },
+	turn_start: { compact: "TURN+", full: "TURN START", color: color.green },
+	turn_end: { compact: "TURN-", full: "TURN END  ", color: color.yellow },
+	progress: { compact: "PROG ", full: "PROGRESS  ", color: color.cyan },
+	result: { compact: "RSULT", full: "RESULT    ", color: color.green },
 };
 
 /** Returns the EventLabel for a given event type. */

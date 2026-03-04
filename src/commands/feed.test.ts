@@ -469,6 +469,10 @@ describe("feedCommand", () => {
 				"spawn",
 				"error",
 				"custom",
+				"turn_start",
+				"turn_end",
+				"progress",
+				"result",
 			] as const;
 			for (const eventType of eventTypes) {
 				store.insert(
@@ -494,6 +498,10 @@ describe("feedCommand", () => {
 			expect(out).toContain("SPAWN");
 			expect(out).toContain("ERROR");
 			expect(out).toContain("CUSTM");
+			expect(out).toContain("TURN+");
+			expect(out).toContain("TURN-");
+			expect(out).toContain("PROG ");
+			expect(out).toContain("RSULT");
 		});
 	});
 
