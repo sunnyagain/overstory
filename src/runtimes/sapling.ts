@@ -4,7 +4,7 @@
 // Key characteristics:
 // - Headless: Sapling runs as a Bun subprocess (no tmux TUI)
 // - Instruction file: SAPLING.md (auto-read from worktree root)
-// - Communication: JSON-RPC over stdin/stdout (--mode rpc)
+// - Communication: NDJSON event stream on stdout (--json)
 // - Guards: .sapling/guards.json (written by deployConfig from guard-rules.ts constants)
 // - Events: NDJSON stream on stdout (parsed for token usage and agent events)
 
@@ -195,7 +195,7 @@ export class SaplingRuntime implements AgentRuntime {
 	 * @returns Shell command string suitable for tmux new-session -c
 	 */
 	buildSpawnCommand(opts: SpawnOpts): string {
-		let cmd = `sp run --model ${opts.model} --mode rpc`;
+		let cmd = `sp run --model ${opts.model} --json`;
 
 		if (opts.appendSystemPromptFile) {
 			// Read role definition from file at shell expansion time — avoids tmux
@@ -239,7 +239,7 @@ export class SaplingRuntime implements AgentRuntime {
 	/**
 	 * Build the argv array for Bun.spawn() to launch a Sapling agent subprocess.
 	 *
-	 * Returns an argv array that starts the Sapling agent in RPC mode. The agent
+	 * Returns an argv array that starts the Sapling agent with NDJSON event output. The agent
 	 * reads its instructions from the file at `opts.instructionPath`, processes
 	 * the task, emits NDJSON events on stdout, and exits on completion.
 	 *
@@ -252,11 +252,10 @@ export class SaplingRuntime implements AgentRuntime {
 			"run",
 			"--model",
 			opts.model,
-			"--mode",
-			"rpc",
+			"--json",
 			"--cwd",
 			opts.cwd,
-			"--instructions",
+			"--system-prompt-file",
 			opts.instructionPath,
 		];
 	}
