@@ -477,7 +477,11 @@ export type EventType =
 	| "mail_received"
 	| "spawn"
 	| "error"
-	| "custom";
+	| "custom"
+	| "turn_start"
+	| "turn_end"
+	| "progress"
+	| "result";
 
 /** Severity levels for events. */
 export type EventLevel = "debug" | "info" | "warn" | "error";

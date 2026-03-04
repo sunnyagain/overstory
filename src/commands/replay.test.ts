@@ -701,6 +701,10 @@ describe("replayCommand", () => {
 				"spawn",
 				"error",
 				"custom",
+				"turn_start",
+				"turn_end",
+				"progress",
+				"result",
 			] as const;
 			for (const eventType of eventTypes) {
 				store.insert(
@@ -724,6 +728,10 @@ describe("replayCommand", () => {
 			expect(out).toContain("SPAWN");
 			expect(out).toContain("ERROR");
 			expect(out).toContain("CUSTOM");
+			expect(out).toContain("TURN START");
+			expect(out).toContain("TURN END");
+			expect(out).toContain("PROGRESS");
+			expect(out).toContain("RESULT");
 		});
 
 		test("long data values are truncated", async () => {
