@@ -18,6 +18,7 @@
  * 14. Return AgentSession
  */
 
+import { mkdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createIdentity, loadIdentity } from "../agents/identity.ts";
@@ -850,9 +851,20 @@ export async function slingCommand(taskId: string, opts: SlingOptions): Promise<
 				model: resolvedModel.model,
 				instructionPath: runtime.instructionPath,
 			});
+
+			// Create a timestamped log dir for this headless agent session.
+			// Redirecting stdout/stderr to files prevents OS pipe buffer backpressure:
+			// when nobody reads the pipe, the child blocks on write() after ~64 KB and
+			// becomes a zombie. File writes have no such limit.
+			const logTimestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			const agentLogDir = join(overstoryDir, "logs", name, logTimestamp);
+			mkdirSync(agentLogDir, { recursive: true });
+
 			const headlessProc = await spawnHeadlessAgent(argv, {
 				cwd: worktreePath,
 				env: { ...(process.env as Record<string, string>), ...directEnv },
+				stdoutFile: join(agentLogDir, "stdout.log"),
+				stderrFile: join(agentLogDir, "stderr.log"),
 			});
 
 			// 13. Record session with empty tmuxSession (no tmux pane for headless agents).
