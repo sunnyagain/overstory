@@ -5,6 +5,7 @@
  * MetricsStore, and tmux capture-pane.
  */
 
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Command } from "commander";
 import { loadConfig } from "../config.ts";
@@ -86,6 +87,178 @@ async function captureTmux(sessionName: string, lines: number): Promise<string |
 	}
 }
 
+/** Parsed data from a headless agent's stdout.log NDJSON event stream. */
+interface StdoutLogData {
+	toolCalls: Array<{
+		toolName: string;
+		argsSummary: string;
+		durationMs: number | null;
+		timestamp: string;
+	}>;
+	cumulativeInputTokens: number;
+	cumulativeOutputTokens: number;
+	cumulativeCacheReadTokens: number;
+	lastModel: string;
+	lastContextUtilization: number | null;
+	currentTurn: number;
+	isMidTool: boolean;
+}
+
+/**
+ * Find the most recent log directory for a headless agent.
+ * Looks under logsBaseDir/{agentName}/ and returns the last entry
+ * when sorted alphabetically (ISO timestamps sort = chronological).
+ */
+async function findLatestLogDir(logsBaseDir: string, agentName: string): Promise<string | null> {
+	const agentLogsDir = join(logsBaseDir, agentName);
+	try {
+		const entries = await readdir(agentLogsDir);
+		if (entries.length === 0) return null;
+		entries.sort();
+		const latest = entries[entries.length - 1];
+		if (!latest) return null;
+		return join(agentLogsDir, latest);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Parse the last 200 lines of a headless agent's stdout.log NDJSON file.
+ *
+ * Extracts tool call activity and token usage from Sapling/Codex event streams.
+ * Handles partial lines and malformed JSON gracefully.
+ *
+ * @param logPath - Absolute path to stdout.log
+ * @returns Parsed data, or null if file missing or unreadable
+ */
+async function parseStdoutLog(logPath: string): Promise<StdoutLogData | null> {
+	const file = Bun.file(logPath);
+	if (!(await file.exists())) return null;
+
+	try {
+		const text = await file.text();
+		const allLines = text.split("\n");
+		// Tail last 200 lines for efficiency
+		const lines = allLines.length > 200 ? allLines.slice(-200) : allLines;
+
+		const toolCalls: StdoutLogData["toolCalls"] = [];
+
+		// Track pending tool_start events for durationMs matching.
+		// When tool_end arrives, pop the most recent pending entry with matching toolName.
+		const pendingTools: Array<{
+			toolName: string;
+			argsSummary: string;
+			timestamp: string;
+		}> = [];
+
+		let cumulativeInputTokens = 0;
+		let cumulativeOutputTokens = 0;
+		let cumulativeCacheReadTokens = 0;
+		let lastModel = "";
+		let lastContextUtilization: number | null = null;
+		let currentTurn = 0;
+		let lastEventType: string | null = null;
+
+		for (const line of lines) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+
+			let event: Record<string, unknown>;
+			try {
+				event = JSON.parse(trimmed) as Record<string, unknown>;
+			} catch {
+				continue;
+			}
+
+			const type = typeof event.type === "string" ? event.type : null;
+			if (!type) continue;
+
+			lastEventType = type;
+			const timestamp =
+				typeof event.timestamp === "string" ? event.timestamp : new Date().toISOString();
+
+			if (type === "tool_start") {
+				const toolName =
+					typeof event.toolName === "string" ? event.toolName : "unknown";
+				const argsSummary =
+					typeof event.argsSummary === "string" ? event.argsSummary : "";
+				pendingTools.push({ toolName, argsSummary, timestamp });
+			} else if (type === "tool_end") {
+				const toolName =
+					typeof event.toolName === "string" ? event.toolName : "";
+				const durationMs =
+					typeof event.durationMs === "number" ? event.durationMs : null;
+
+				// Find and pop the most recent matching pending tool
+				let pendingIdx = -1;
+				for (let i = pendingTools.length - 1; i >= 0; i--) {
+					if (pendingTools[i]?.toolName === toolName) {
+						pendingIdx = i;
+						break;
+					}
+				}
+				if (pendingIdx >= 0) {
+					const pending = pendingTools[pendingIdx];
+					if (pending) {
+						pendingTools.splice(pendingIdx, 1);
+						toolCalls.push({
+							toolName: pending.toolName,
+							argsSummary: pending.argsSummary,
+							durationMs,
+							timestamp: pending.timestamp,
+						});
+					}
+				}
+			} else if (type === "turn_start") {
+				const turn = typeof event.turn === "number" ? event.turn : currentTurn + 1;
+				currentTurn = turn;
+			} else if (type === "turn_end") {
+				const inputTokens =
+					typeof event.inputTokens === "number" ? event.inputTokens : 0;
+				const outputTokens =
+					typeof event.outputTokens === "number" ? event.outputTokens : 0;
+				const cacheReadTokens =
+					typeof event.cacheReadTokens === "number" ? event.cacheReadTokens : 0;
+				const model = typeof event.model === "string" ? event.model : "";
+				const ctxUtil =
+					typeof event.contextUtilization === "number"
+						? event.contextUtilization
+						: null;
+
+				cumulativeInputTokens += inputTokens;
+				cumulativeOutputTokens += outputTokens;
+				cumulativeCacheReadTokens += cacheReadTokens;
+				if (model) lastModel = model;
+				if (ctxUtil !== null) lastContextUtilization = ctxUtil;
+			}
+		}
+
+		// Any still-pending tool_starts are mid-execution — include them without durationMs
+		for (const pending of pendingTools) {
+			toolCalls.push({
+				toolName: pending.toolName,
+				argsSummary: pending.argsSummary,
+				durationMs: null,
+				timestamp: pending.timestamp,
+			});
+		}
+
+		return {
+			toolCalls,
+			cumulativeInputTokens,
+			cumulativeOutputTokens,
+			cumulativeCacheReadTokens,
+			lastModel,
+			lastContextUtilization,
+			currentTurn,
+			isMidTool: lastEventType === "tool_start",
+		};
+	} catch {
+		return null;
+	}
+}
+
 export interface InspectData {
 	session: AgentSession;
 	timeSinceLastActivity: number;
@@ -106,6 +279,12 @@ export interface InspectData {
 		modelUsed: string | null;
 	} | null;
 	tmuxOutput: string | null;
+	/** Turn progress for headless agents (populated from stdout.log). */
+	headlessTurnInfo: {
+		currentTurn: number;
+		contextUtilization: number | null;
+		isMidTool: boolean;
+	} | null;
 }
 
 /**
@@ -200,6 +379,52 @@ export async function gatherInspectData(
 			tmuxOutput = await captureTmux(session.tmuxSession, lines);
 		}
 
+		// Headless stdout.log fallback: parse NDJSON event stream for rich activity data.
+		// Used when tmuxSession is empty (headless agent: sapling, codex, etc.).
+		let headlessTurnInfo: InspectData["headlessTurnInfo"] = null;
+		if (session.tmuxSession === "") {
+			const logsBaseDir = join(overstoryDir, "logs");
+			const latestLogDir = await findLatestLogDir(logsBaseDir, agentName);
+			if (latestLogDir !== null) {
+				const stdoutData = await parseStdoutLog(join(latestLogDir, "stdout.log"));
+				if (stdoutData !== null) {
+					// Populate recentToolCalls from stdout.log when events.db had nothing.
+					if (recentToolCalls.length === 0 && stdoutData.toolCalls.length > 0) {
+						const limit = opts.limit ?? 20;
+						recentToolCalls = stdoutData.toolCalls.slice(0, limit).map((call) => ({
+							toolName: call.toolName,
+							args: call.argsSummary,
+							durationMs: call.durationMs,
+							timestamp: call.timestamp,
+						}));
+					}
+
+					// Populate tokenUsage from turn_end events when metrics.db had nothing.
+					if (
+						tokenUsage === null &&
+						(stdoutData.cumulativeInputTokens > 0 ||
+							stdoutData.cumulativeOutputTokens > 0)
+					) {
+						tokenUsage = {
+							inputTokens: stdoutData.cumulativeInputTokens,
+							outputTokens: stdoutData.cumulativeOutputTokens,
+							cacheReadTokens: stdoutData.cumulativeCacheReadTokens,
+							cacheCreationTokens: 0,
+							estimatedCostUsd: null,
+							modelUsed: stdoutData.lastModel || null,
+						};
+					}
+
+					// Always populate turn progress info for headless agents.
+					headlessTurnInfo = {
+						currentTurn: stdoutData.currentTurn,
+						contextUtilization: stdoutData.lastContextUtilization,
+						isMidTool: stdoutData.isMidTool,
+					};
+				}
+			}
+		}
+
 		// Headless fallback: show recent events as live output when no tmux
 		if (!tmuxOutput && session.tmuxSession === "" && recentToolCalls.length > 0) {
 			const lines: string[] = ["[Headless agent — showing recent tool events]", ""];
@@ -219,6 +444,7 @@ export async function gatherInspectData(
 			toolStats,
 			tokenUsage,
 			tmuxOutput,
+			headlessTurnInfo,
 		};
 	} finally {
 		store.close();
@@ -254,6 +480,23 @@ export function printInspectData(data: InspectData): void {
 	// Current file
 	if (data.currentFile) {
 		w(`Current file: ${data.currentFile}\n\n`);
+	}
+
+	// Headless turn progress
+	if (data.headlessTurnInfo) {
+		const { currentTurn, contextUtilization, isMidTool } = data.headlessTurnInfo;
+		w("Turn Progress\n");
+		w(`${separator()}\n`);
+		if (currentTurn > 0) {
+			w(`  Current turn:  ${currentTurn}\n`);
+		}
+		if (contextUtilization !== null) {
+			const pct = (contextUtilization * 100).toFixed(1);
+			w(`  Context usage: ${pct}%\n`);
+		}
+		const status = isMidTool ? "executing tool" : "between turns";
+		w(`  Status:        ${status}\n`);
+		w("\n");
 	}
 
 	// Token usage
