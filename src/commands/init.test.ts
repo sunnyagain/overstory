@@ -839,6 +839,80 @@ describe("initCommand: scaffold commit", () => {
 	});
 });
 
+describe("initCommand: spawner error resilience", () => {
+	let tempDir: string;
+	let originalCwd: string;
+	let originalWrite: typeof process.stdout.write;
+
+	beforeEach(async () => {
+		tempDir = await createTempGitRepo();
+		originalCwd = process.cwd();
+		process.chdir(tempDir);
+		originalWrite = process.stdout.write;
+		process.stdout.write = (() => true) as typeof process.stdout.write;
+	});
+
+	afterEach(async () => {
+		process.chdir(originalCwd);
+		process.stdout.write = originalWrite;
+		await cleanupTempDir(tempDir);
+	});
+
+	test("spawner that throws ENOENT does not crash init — degrades gracefully", async () => {
+		const throwingSpawner: Spawner = async (args) => {
+			const key = args.join(" ");
+			// Allow git operations through (git add, git diff, git commit)
+			if (key.startsWith("git")) return { exitCode: 0, stdout: "", stderr: "" };
+			// Simulate ecosystem tool binary not found (ENOENT)
+			throw new Error(`spawn ENOENT: ${args[0]}: not found`);
+		};
+
+		// Should not throw — graceful degradation
+		await expect(initCommand({ _spawner: throwingSpawner })).resolves.toBeUndefined();
+
+		// Core .overstory files should still be created
+		const configPath = join(tempDir, ".overstory", "config.yaml");
+		expect(await Bun.file(configPath).exists()).toBe(true);
+	});
+
+	test("throwing spawner causes all ecosystem tools to be skipped", async () => {
+		const calls: string[][] = [];
+		const throwingSpawner: Spawner = async (args) => {
+			calls.push(args);
+			const key = args.join(" ");
+			if (key.startsWith("git")) return { exitCode: 0, stdout: "", stderr: "" };
+			throw new Error("spawn ENOENT");
+		};
+
+		await initCommand({ _spawner: throwingSpawner });
+
+		// init and onboard should NOT be called when --version throws
+		expect(calls).not.toContainEqual(["ml", "init"]);
+		expect(calls).not.toContainEqual(["sd", "init"]);
+		expect(calls).not.toContainEqual(["cn", "init"]);
+		expect(calls).not.toContainEqual(["ml", "onboard"]);
+		expect(calls).not.toContainEqual(["sd", "onboard"]);
+		expect(calls).not.toContainEqual(["cn", "onboard"]);
+	});
+
+	test("spawner that throws only on init (not --version) still skips gracefully", async () => {
+		// --version succeeds (tool appears installed), but init itself throws
+		const throwingInitSpawner: Spawner = async (args) => {
+			const key = args.join(" ");
+			if (key.startsWith("git")) return { exitCode: 0, stdout: "", stderr: "" };
+			if (key.endsWith("--version")) return { exitCode: 0, stdout: "1.0.0", stderr: "" };
+			if (key.endsWith("onboard")) return { exitCode: 0, stdout: "", stderr: "" };
+			// init itself throws
+			throw new Error("spawn ENOENT on init");
+		};
+
+		await expect(initCommand({ _spawner: throwingInitSpawner })).resolves.toBeUndefined();
+
+		const configPath = join(tempDir, ".overstory", "config.yaml");
+		expect(await Bun.file(configPath).exists()).toBe(true);
+	});
+});
+
 describe("initCommand: .gitattributes setup", () => {
 	let tempDir: string;
 	let originalCwd: string;

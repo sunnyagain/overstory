@@ -32,15 +32,21 @@ export type Spawner = (
 ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
 const defaultSpawner: Spawner = async (args, opts) => {
-	const proc = Bun.spawn(args, {
-		cwd: opts?.cwd,
-		stdout: "pipe",
-		stderr: "pipe",
-	});
-	const exitCode = await proc.exited;
-	const stdout = await new Response(proc.stdout).text();
-	const stderr = await new Response(proc.stderr).text();
-	return { exitCode, stdout, stderr };
+	try {
+		const proc = Bun.spawn(args, {
+			cwd: opts?.cwd,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const exitCode = await proc.exited;
+		const stdout = await new Response(proc.stdout).text();
+		const stderr = await new Response(proc.stderr).text();
+		return { exitCode, stdout, stderr };
+	} catch (err) {
+		// Binary not found (ENOENT) or other spawn failure — treat as non-zero exit
+		const message = err instanceof Error ? err.message : String(err);
+		return { exitCode: 1, stdout: "", stderr: message };
+	}
 };
 
 interface SiblingTool {
@@ -80,8 +86,12 @@ export function resolveToolSet(opts: InitOptions): SiblingTool[] {
 }
 
 async function isToolInstalled(cli: string, spawner: Spawner): Promise<boolean> {
-	const result = await spawner([cli, "--version"]);
-	return result.exitCode === 0;
+	try {
+		const result = await spawner([cli, "--version"]);
+		return result.exitCode === 0;
+	} catch {
+		return false;
+	}
 }
 
 async function initSiblingTool(
@@ -98,7 +108,15 @@ async function initSiblingTool(
 		return "skipped";
 	}
 
-	const result = await spawner([tool.cli, ...tool.initCmd], { cwd: projectRoot });
+	let result: { exitCode: number; stdout: string; stderr: string };
+	try {
+		result = await spawner([tool.cli, ...tool.initCmd], { cwd: projectRoot });
+	} catch (err) {
+		// Spawn failure (e.g. ENOENT) — treat as not installed
+		const message = err instanceof Error ? err.message : String(err);
+		printWarning(`${tool.name} init failed`, message);
+		return "skipped";
+	}
 	if (result.exitCode !== 0) {
 		// Check if dot directory already exists (already initialized)
 		try {
@@ -123,8 +141,12 @@ async function onboardTool(
 	const installed = await isToolInstalled(tool.cli, spawner);
 	if (!installed) return "current";
 
-	const result = await spawner([tool.cli, ...tool.onboardCmd], { cwd: projectRoot });
-	return result.exitCode === 0 ? "appended" : "current";
+	try {
+		const result = await spawner([tool.cli, ...tool.onboardCmd], { cwd: projectRoot });
+		return result.exitCode === 0 ? "appended" : "current";
+	} catch {
+		return "current";
+	}
 }
 
 /**
