@@ -22,7 +22,7 @@ import { createEventStore } from "../events/store.ts";
 import { createSessionStore } from "../sessions/store.ts";
 import { cleanupTempDir } from "../test-helpers.ts";
 import type { AgentSession, HealthCheck, StoredEvent } from "../types.ts";
-import { buildCompletionMessage, runDaemonTick } from "./daemon.ts";
+import { buildCompletionMessage, runDaemonTick, startDaemon } from "./daemon.ts";
 
 // === Test constants ===
 
@@ -2232,5 +2232,77 @@ describe("headless agent stale detection via events.db (Bug 2)", () => {
 		} finally {
 			eventStore.close();
 		}
+	});
+});
+
+// ============================================================
+// startDaemon() shutdown cleanup
+// ============================================================
+
+describe("startDaemon() stop() cleans up tailer registry", () => {
+	let tempRoot: string;
+
+	beforeEach(async () => {
+		tempRoot = await createTempRoot();
+	});
+
+	afterEach(async () => {
+		await cleanupTempDir(tempRoot);
+	});
+
+	test("stop() calls handle.stop() on all registry entries and empties the map", async () => {
+		// Build a fake tailer registry with two entries.
+		const stopped: Record<string, boolean> = { tailer1: false, tailer2: false };
+
+		const registry = new Map<string, { agentName: string; logPath: string; stop(): void }>([
+			[
+				"agent-one",
+				{
+					agentName: "agent-one",
+					logPath: "/fake/one/stdout.log",
+					stop: () => {
+						stopped["tailer1"] = true;
+					},
+				},
+			],
+			[
+				"agent-two",
+				{
+					agentName: "agent-two",
+					logPath: "/fake/two/stdout.log",
+					stop: () => {
+						stopped["tailer2"] = true;
+					},
+				},
+			],
+		]);
+
+		// Use a long interval so the periodic tick never fires during this test.
+		const daemon = startDaemon({
+			root: tempRoot,
+			intervalMs: 60_000,
+			...THRESHOLDS,
+			_tmux: { isSessionAlive: async () => false, killSession: async () => {} },
+			_nudge: async () => ({ delivered: false }),
+			_process: { isAlive: () => false, killTree: async () => {} },
+			_triage: async () => "extend",
+			_recordFailure: async () => {},
+			_getConnection: () => undefined,
+			_removeConnection: () => {},
+			_eventStore: null,
+			_mailStore: null,
+			_tailerRegistry: registry,
+			_tailerFactory: () => ({ agentName: "", logPath: "", stop: () => {} }),
+			_findLatestStdoutLog: async () => null,
+		});
+
+		// Allow the first (immediate) tick to settle.
+		await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+		daemon.stop();
+
+		expect(stopped["tailer1"]).toBe(true);
+		expect(stopped["tailer2"]).toBe(true);
+		expect(registry.size).toBe(0);
 	});
 });

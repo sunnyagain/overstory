@@ -340,6 +340,7 @@ export interface DaemonOptions {
  */
 export function startDaemon(options: DaemonOptions & { intervalMs: number }): { stop: () => void } {
 	const { intervalMs } = options;
+	const tailerRegistry = options._tailerRegistry ?? _defaultTailerRegistry;
 
 	// Run the first tick immediately, then on interval
 	runDaemonTick(options).catch(() => {
@@ -355,6 +356,10 @@ export function startDaemon(options: DaemonOptions & { intervalMs: number }): { 
 	return {
 		stop(): void {
 			clearInterval(interval);
+			for (const [name, handle] of tailerRegistry) {
+				handle.stop();
+				tailerRegistry.delete(name);
+			}
 		},
 	};
 }
