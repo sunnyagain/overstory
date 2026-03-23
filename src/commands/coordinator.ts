@@ -38,6 +38,7 @@ import {
 	isSessionAlive,
 	killSession,
 	sendKeys,
+	TMUX_SOCKET,
 	waitForTuiReady,
 } from "../worktree/tmux.ts";
 import { nudgeAgent } from "./nudge.ts";
@@ -630,7 +631,7 @@ export async function startCoordinatorSession(
 		}
 
 		if (shouldAttach) {
-			Bun.spawnSync(["tmux", "attach-session", "-t", tmuxSession], {
+			Bun.spawnSync(["tmux", "-L", TMUX_SOCKET, "attach-session", "-t", tmuxSession], {
 				stdio: ["inherit", "inherit", "inherit"],
 			});
 		}

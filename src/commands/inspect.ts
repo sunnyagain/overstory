@@ -18,6 +18,7 @@ import { renderHeader, separator, stateIconColored } from "../logging/theme.ts";
 import { createMetricsStore } from "../metrics/store.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession, StoredEvent, ToolStats } from "../types.ts";
+import { TMUX_SOCKET } from "../worktree/tmux.ts";
 
 /**
  * Extract current file from most recent Edit/Write/Read tool_start event.
@@ -72,10 +73,13 @@ function summarizeArgs(toolArgs: string | null): string {
  */
 async function captureTmux(sessionName: string, lines: number): Promise<string | null> {
 	try {
-		const proc = Bun.spawn(["tmux", "capture-pane", "-t", sessionName, "-p", "-S", `-${lines}`], {
-			stdout: "pipe",
-			stderr: "pipe",
-		});
+		const proc = Bun.spawn(
+			["tmux", "-L", TMUX_SOCKET, "capture-pane", "-t", sessionName, "-p", "-S", `-${lines}`],
+			{
+				stdout: "pipe",
+				stderr: "pipe",
+			},
+		);
 		const exitCode = await proc.exited;
 		if (exitCode !== 0) {
 			return null;

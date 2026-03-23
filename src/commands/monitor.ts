@@ -25,7 +25,13 @@ import { printHint, printSuccess } from "../logging/color.ts";
 import { getRuntime } from "../runtimes/registry.ts";
 import { openSessionStore } from "../sessions/compat.ts";
 import type { AgentSession } from "../types.ts";
-import { createSession, isSessionAlive, killSession, sendKeys } from "../worktree/tmux.ts";
+import {
+	createSession,
+	isSessionAlive,
+	killSession,
+	sendKeys,
+	TMUX_SOCKET,
+} from "../worktree/tmux.ts";
 import { isRunningAsRoot } from "./sling.ts";
 
 /** Default monitor agent name. */
@@ -215,7 +221,7 @@ async function startMonitor(opts: { json: boolean; attach: boolean }): Promise<v
 		}
 
 		if (shouldAttach) {
-			Bun.spawnSync(["tmux", "attach-session", "-t", tmuxSession], {
+			Bun.spawnSync(["tmux", "-L", TMUX_SOCKET, "attach-session", "-t", tmuxSession], {
 				stdio: ["inherit", "inherit", "inherit"],
 			});
 		}
