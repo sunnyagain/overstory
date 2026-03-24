@@ -1,0 +1,21 @@
+{
+	"name": "Overstory Dev",
+	"build": {
+		"dockerfile": "./Dockerfile"
+	},
+	"remoteUser": "devuser",
+	"workspaceFolder": "/workspaces/overstory",
+	"remoteEnv": {
+		"ANTHROPIC_API_KEY": "${localEnv:ANTHROPIC_API_KEY}",
+		"OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+		"OPENCODE_MODEL": "${localEnv:OPENCODE_MODEL}",
+		"OPENCODE_PROVIDER": "${localEnv:OPENCODE_PROVIDER}"
+	},
+	"onCreateCommand": "bun install --frozen-lockfile && bun link",
+	"postCreateCommand": "bash .devcontainer/post-create.sh",
+	"customizations": {
+		"vscode": {
+			"extensions": ["biomejs.biome"]
+		}
+	}
+}
