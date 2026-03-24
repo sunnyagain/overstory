@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Git
+.git/
+
+# Build output
+dist/
+*.tsbuildinfo
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Overstory runtime state
+.overstory/
+.sisyphus/
+
+# Agent definitions and templates (not needed for dev container build)
+agents/
+templates/
+
+# Markdown files (except README)
+*.md
+!README.md
